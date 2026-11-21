@@ -4,6 +4,7 @@ import secrets
 import os
 import html
 import json
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -48,6 +49,12 @@ if "anonymous_id" not in st.session_state:
     )
 
 anonymous_id = st.session_state.anonymous_id
+
+# Each new Streamlit session starts with an empty chat view.
+if "chat_joined_at" not in st.session_state:
+    st.session_state.chat_joined_at = datetime.now(timezone.utc).isoformat()
+
+chat_joined_at = st.session_state.chat_joined_at
 
 # =========================================================
 # 4. CUSTOM CSS
@@ -327,6 +334,7 @@ realtime_html = r"""
         const SUPABASE_URL = __SUPABASE_URL__;
         const SUPABASE_KEY = __SUPABASE_KEY__;
         const USER_ID = __USER_ID__;
+        const SESSION_JOINED_AT = __SESSION_JOINED_AT__;
 
         const client = window.supabase.createClient(
             SUPABASE_URL,
@@ -403,16 +411,12 @@ realtime_html = r"""
         async function loadMessages() {
             connectionBox.textContent = "● LOADING MESSAGES";
 
-            // Only show messages from the last 24 hours.
-            // The database cleanup job below permanently deletes older rows.
-            const cutoff = new Date(
-                Date.now() - 24 * 60 * 60 * 1000
-            ).toISOString();
-
+            // Show only messages posted after this visitor joined.
+            // Older rows remain in Supabase but are hidden from this session.
             const { data, error } = await client
                 .from("messages")
                 .select("sender_id, message, created_at")
-                .gte("created_at", cutoff)
+                .gte("created_at", SESSION_JOINED_AT)
                 .order("created_at", { ascending: true })
                 .limit(100);
 
@@ -453,7 +457,14 @@ realtime_html = r"""
                     table: "messages"
                 },
                 (payload) => {
-                    addMessage(payload.new);
+                    // Ignore any event created before this visitor joined.
+                    if (
+                        payload.new.created_at &&
+                        new Date(payload.new.created_at).getTime() >=
+                        new Date(SESSION_JOINED_AT).getTime()
+                    ) {
+                        addMessage(payload.new);
+                    }
                 }
             )
             .subscribe((status) => {
@@ -526,6 +537,7 @@ realtime_html = (
     .replace("__SUPABASE_URL__", json.dumps(SUPABASE_URL))
     .replace("__SUPABASE_KEY__", json.dumps(SUPABASE_KEY))
     .replace("__USER_ID__", json.dumps(anonymous_id))
+    .replace("__SESSION_JOINED_AT__", json.dumps(chat_joined_at))
 )
 
 components.html(
@@ -538,4 +550,4 @@ components.html(
 # 8. FOOTER
 # =========================================================
 st.write("")
-st.caption("Text only · No uploads · Anonymous global chat")
+st.caption("Text only · No uploads · New visitors see messages from the time they join")
